@@ -27,8 +27,13 @@ using namespace std;
 
 #include "base64.h"
 
-#include <wiringPi.h>
-#include <wiringPiSPI.h>
+//#include <wiringPi.h>
+//#include <wiringPiSPI.h>
+//for bb
+#include <stdbool.h>
+#include "c-periphery/src/gpio.h"
+#include "c-periphery/src/spi.h"
+#include <unistd.h>
 
 typedef bool boolean;
 typedef unsigned char byte;
@@ -66,6 +71,10 @@ enum sf_t { SF7=7, SF8, SF9, SF10, SF11, SF12 };
 int ssPin = 6;
 int dio0  = 7;
 int RST   = 0;
+
+bool state_pin;
+spi_t spi;
+gpio_t dio0_gpio_in, RST_gpio_out;
 
 // Set spreading factor (SF7 - SF12)
 sf_t sf = SF7;
@@ -170,12 +179,12 @@ void die(const char *s)
 
 void selectreceiver()
 {
-    digitalWrite(ssPin, LOW);
+    //digitalWrite(ssPin, LOW);
 }
 
 void unselectreceiver()
 {
-    digitalWrite(ssPin, HIGH);
+    //digitalWrite(ssPin, HIGH);
 }
 
 byte readRegister(byte addr)
@@ -185,8 +194,15 @@ byte readRegister(byte addr)
     selectreceiver();
     spibuf[0] = addr & 0x7F;
     spibuf[1] = 0x00;
-    wiringPiSPIDataRW(CHANNEL, spibuf, 2);
+    
+    //wiringPiSPIDataRW(CHANNEL, spibuf, 2);
+    if (spi_transfer(&spi, spibuf, spibuf, sizeof(spibuf)) < 0) {
+		fprintf(stderr, "spi_transfer(): %s\n", spi_errmsg(&spi));
+        exit(1);
+    } 
     unselectreceiver();
+    
+    //printf("Hexadecimal value is (Alphabet in capital letters): %02X\n",spibuf[1]);
 
     return spibuf[1];
 }
@@ -198,8 +214,11 @@ void writeRegister(byte addr, byte value)
     spibuf[0] = addr | 0x80;
     spibuf[1] = value;
     selectreceiver();
-    wiringPiSPIDataRW(CHANNEL, spibuf, 2);
-
+    //wiringPiSPIDataRW(CHANNEL, spibuf, 2);
+	if (spi_transfer(&spi, spibuf, spibuf, sizeof(spibuf)) < 0) {
+		fprintf(stderr, "spi_transfer(): %s\n", spi_errmsg(&spi));
+        exit(1);
+    }
     unselectreceiver();
 }
 
@@ -241,12 +260,23 @@ boolean receivePkt(char *payload)
 void SetupLoRa()
 {
     
-    digitalWrite(RST, HIGH);
-    delay(100);
-    digitalWrite(RST, LOW);
-    delay(100);
+    //digitalWrite(RST, HIGH);
+    usleep(100);
+    state_pin = 1;
+    if (gpio_write(&RST_gpio_out, !state_pin) < 0) {
+		fprintf(stderr, "gpio_write(): %s\n", gpio_errmsg(&RST_gpio_out));
+        exit(1);
+    }
+    //digitalWrite(RST, LOW);
+    state_pin = 0;
+    if (gpio_write(&RST_gpio_out, !state_pin) < 0) {
+		fprintf(stderr, "gpio_write(): %s\n", gpio_errmsg(&RST_gpio_out));
+        exit(1);
+    }
+    usleep(100);
 
     byte version = readRegister(REG_VERSION);
+    //printf("setuplora\n");
 
     if (version == 0x22) {
         // sx1272
@@ -254,10 +284,20 @@ void SetupLoRa()
         sx1272 = true;
     } else {
         // sx1276?
-        digitalWrite(RST, LOW);
-        delay(100);
-        digitalWrite(RST, HIGH);
-        delay(100);
+        //digitalWrite(RST, HIGH);
+        state_pin = 1;
+		if (gpio_write(&RST_gpio_out, !state_pin) < 0) {
+			fprintf(stderr, "gpio_write(): %s\n", gpio_errmsg(&RST_gpio_out));
+			exit(1);
+		}
+        usleep(100);
+        //digitalWrite(RST, LOW);
+        state_pin = 0;
+		if (gpio_write(&RST_gpio_out, !state_pin) < 0) {
+			fprintf(stderr, "gpio_write(): %s\n", gpio_errmsg(&RST_gpio_out));
+			exit(1);
+		}
+        usleep(100);
         version = readRegister(REG_VERSION);
         if (version == 0x12) {
             // sx1276
@@ -381,7 +421,12 @@ void receivepacket() {
     long int SNR;
     int rssicorr;
 
-    if(digitalRead(dio0) == 1)
+    if (gpio_read(&dio0_gpio_in, &state_pin) < 0) {
+		fprintf(stderr, "gpio_read(): %s\n", gpio_errmsg(&dio0_gpio_in));
+		exit(1);
+	}
+
+    if (state_pin == 1)
     {
         if(receivePkt(message)) {
             byte value = readRegister(REG_PKT_SNR_VALUE);
@@ -536,13 +581,28 @@ int main () {
     struct timeval nowtime;
     uint32_t lasttime;
 
-    wiringPiSetup () ;
-    pinMode(ssPin, OUTPUT);
-    pinMode(dio0, INPUT);
-    pinMode(RST, OUTPUT);
+    //wiringPiSetup () ;
+    //pinMode(ssPin, OUTPUT);
+    //pinMode(dio0, INPUT);
+    //pinMode(RST, OUTPUT);
+    state_pin = 1;
+    //reset
+    if (gpio_open(&RST_gpio_out, 60, GPIO_DIR_OUT) < 0) {
+        	fprintf(stderr, "gpio_open(): %s\n", gpio_errmsg(&RST_gpio_out));
+        	exit(1);
+    }
+    //dio0
+    if (gpio_open(&dio0_gpio_in, 57, GPIO_DIR_IN) < 0) {
+        fprintf(stderr, "gpio_open(): %s\n", gpio_errmsg(&dio0_gpio_in));
+        exit(1);
+    }
 
     //int fd = 
-    wiringPiSPISetup(CHANNEL, 500000);
+    //wiringPiSPISetup(CHANNEL, 500000);
+    if (spi_open(&spi, "/dev/spidev1.0", 0, 500000) < 0) {
+		fprintf(stderr, "spi_open(): %s\n", spi_errmsg(&spi));
+        exit(1);
+    }
     //cout << "Init result: " << fd << endl;
 
     SetupLoRa();
@@ -584,7 +644,7 @@ int main () {
             cp_nb_rx_ok = 0;
             cp_up_pkt_fwd = 0;
         }
-        delay(1);
+        usleep(1);
     }
 
     return (0);
